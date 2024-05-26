@@ -5,6 +5,7 @@ use crossbeam_channel::{self, Receiver, Sender};
 use napi::*;
 use napi_derive::js_function;
 
+use web_audio_api::context::ConcreteBaseAudioContext;
 use web_audio_api::node::{AudioNode, AudioNodeOptions, ChannelCountMode, ChannelInterpretation};
 use web_audio_api::worklet::{
     AudioParamValues, AudioWorkletGlobalScope, AudioWorkletNode, AudioWorkletNodeOptions,
@@ -25,6 +26,7 @@ static INCREMENTING_ID: AtomicU32 = AtomicU32::new(0);
 enum WorkletCommand {
     Drop(u32),
     Process(ProcessorArguments),
+    Tick,
 }
 
 /// Render thread to Worker processor arguments
@@ -61,7 +63,7 @@ struct ProcessCallChannel {
 static GLOBAL_PROCESS_CALL_CHANNEL_MAP: RwLock<Vec<ProcessCallChannel>> = RwLock::new(vec![]);
 
 /// Request a new channel + ID for a newly created (Offline)AudioContext
-pub(crate) fn allocate_process_call_channel() -> usize {
+pub(crate) fn allocate_process_call_channel(ctx: &ConcreteBaseAudioContext) -> usize {
     // Only one process message can be sent at same time from a given context,
     // but Drop messages could be send too, so let's take some room
     let (send, recv) = crossbeam_channel::bounded(32);
@@ -70,6 +72,16 @@ pub(crate) fn allocate_process_call_channel() -> usize {
         recv,
         exited: Arc::new(AtomicBool::new(false)),
     };
+
+    let options = AudioWorkletNodeOptions {
+        number_of_inputs: 1,
+        number_of_outputs: 1, // should be zero, but bug in base lib
+        output_channel_count: Default::default(),
+        parameter_data: Default::default(),
+        audio_node_options: AudioNodeOptions::default(),
+        processor_options: channel.send.clone(),
+    };
+    AudioWorkletNode::new::<RenderTickProcessor>(ctx, options);
 
     // We need a write-lock to initialize the channel
     let mut write_lock = GLOBAL_PROCESS_CALL_CHANNEL_MAP.write().unwrap();
@@ -394,7 +406,7 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
     // Poll for incoming commands and yield back to the event loop if there are none.
     // recv_timeout is not an option due to realtime safety, see discussion of
     // https://github.com/ircam-ismm/node-web-audio-api/pull/124#pullrequestreview-2053515583
-    while let Ok(msg) = process_call_receiver(worklet_id).try_recv() {
+    while let Ok(msg) = process_call_receiver(worklet_id).recv() {
         match msg {
             WorkletCommand::Drop(id) => {
                 let mut processors = ctx.get::<JsObject>(1)?;
@@ -402,6 +414,9 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
             }
             WorkletCommand::Process(args) => {
                 process_audio_worklet(ctx.env, &processors, args)?;
+            }
+            WorkletCommand::Tick => {
+                break;
             }
         }
     }
@@ -784,5 +799,28 @@ impl Drop for NapiAudioWorkletProcessor {
         if !self.exited.load(Ordering::SeqCst) {
             self.send.send(WorkletCommand::Drop(self.id)).unwrap();
         }
+    }
+}
+
+struct RenderTickProcessor {
+    send: Sender<WorkletCommand>,
+}
+
+impl AudioWorkletProcessor for RenderTickProcessor {
+    type ProcessorOptions = Sender<WorkletCommand>;
+
+    fn constructor(send: Self::ProcessorOptions) -> Self {
+        Self { send }
+    }
+
+    fn process<'a, 'b>(
+        &mut self,
+        _inputs: &'b [&'a [&'a [f32]]],
+        _outputs: &'b mut [&'a mut [&'a mut [f32]]],
+        _params: AudioParamValues<'b>,
+        _scope: &'b AudioWorkletGlobalScope,
+    ) -> bool {
+        self.send.send(WorkletCommand::Tick).unwrap();
+        true
     }
 }

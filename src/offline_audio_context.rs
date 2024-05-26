@@ -53,7 +53,8 @@ fn constructor(ctx: CallContext) -> Result<JsUndefined> {
     let sample_rate = ctx.get::<JsNumber>(2)?.get_double()? as f32;
 
     let audio_context = OfflineAudioContext::new(number_of_channels, length, sample_rate);
-    let worklet_id = crate::audio_worklet_node::allocate_process_call_channel();
+    let base = audio_context.base();
+    let worklet_id = crate::audio_worklet_node::allocate_process_call_channel(base);
 
     // -------------------------------------------------
     // Wrap context
