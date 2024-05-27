@@ -19,6 +19,8 @@ use std::option::Option;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
+use std::time::{Duration, Instant};
+
 /// Unique ID generator for AudioWorkletProcessors
 static INCREMENTING_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -404,13 +406,30 @@ fn process_audio_worklet(env: &Env, processors: &JsObject, args: ProcessorArgume
     Ok(())
 }
 
+static PREV_START: RwLock<Option<Instant>> = RwLock::new(None);
+
 /// The entry point into Rust from the Worker
 #[js_function(2)]
 pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndefined> {
+    let enter_start = Instant::now();
+    let mut lock = PREV_START.write().unwrap();
+    if let Some(prev) = *lock {
+        let micros = enter_start.duration_since(prev).as_micros();
+        if micros > 200 {
+            println!("return to Rust after {} micros", micros);
+        }
+    }
+
     // Set thread priority to highest, if not done already
     if !HAS_THREAD_PRIO.replace(true) {
         // allowed to fail
-        let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max);
+        let prio = thread_priority::ThreadPriority::Deadline {
+            runtime: Duration::from_millis(2),
+            deadline: Duration::from_millis(2),
+            period: Duration::from_millis(2),
+            flags: Default::default(),
+        };
+        let _ = thread_priority::set_current_thread_priority(prio);
     }
 
     // Obtain the unique worker ID
@@ -421,8 +440,16 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
     // Poll for incoming commands and yield back to the event loop if there are none.
     // recv_timeout is not an option due to realtime safety, see discussion of
     // https://github.com/ircam-ismm/node-web-audio-api/pull/124#pullrequestreview-2053515583
+    let mut prev = Instant::now();
     loop {
-        match process_call_channel(worklet_id).pop() {
+        let cmd = process_call_channel(worklet_id).pop();
+        let now = Instant::now();
+        let micros = now.duration_since(prev).as_micros();
+        if micros > 3000 {
+            println!("got command after {} micros", micros);
+        }
+
+        match cmd {
             WorkletCommand::Drop(id) => {
                 let mut processors = ctx.get::<JsObject>(1)?;
                 processors.delete_named_property(&id.to_string()).unwrap();
@@ -434,8 +461,17 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
                 break;
             }
         }
+
+        let end = Instant::now();
+        let micros = end.duration_since(now).as_micros();
+        if micros > 200 {
+            println!("handled command after {} micros", micros);
+        }
+
+        prev = now;
     }
 
+    *lock = Some(Instant::now());
     ctx.env.get_undefined()
 }
 
