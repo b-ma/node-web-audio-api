@@ -422,14 +422,11 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
 
     // Set thread priority to highest, if not done already
     if !HAS_THREAD_PRIO.replace(true) {
-        // allowed to fail
-        let prio = thread_priority::ThreadPriority::Deadline {
-            runtime: Duration::from_millis(2),
-            deadline: Duration::from_millis(2),
-            period: Duration::from_millis(2),
-            flags: Default::default(),
-        };
-        let _ = thread_priority::set_current_thread_priority(prio);
+        let result = audio_thread_priority::promote_current_thread_to_real_time(
+            128, 44100, // TODO get sample rate
+        );
+        dbg!(&result);
+        result.ok(); // allowed to fail
     }
 
     // Obtain the unique worker ID
