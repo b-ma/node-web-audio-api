@@ -19,7 +19,7 @@ use std::option::Option;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Unique ID generator for AudioWorkletProcessors
 static INCREMENTING_ID: AtomicU32 = AtomicU32::new(0);
