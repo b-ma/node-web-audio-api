@@ -5,7 +5,6 @@ use crossbeam_channel::{self, Receiver, Sender};
 use napi::*;
 use napi_derive::js_function;
 
-use web_audio_api::context::{BaseAudioContext, ConcreteBaseAudioContext};
 use web_audio_api::node::{AudioNode, AudioNodeOptions, ChannelCountMode, ChannelInterpretation};
 use web_audio_api::worklet::{
     AudioParamValues, AudioWorkletGlobalScope, AudioWorkletNode, AudioWorkletNodeOptions,
@@ -29,7 +28,6 @@ static INCREMENTING_ID: AtomicU32 = AtomicU32::new(0);
 enum WorkletCommand {
     Drop(u32),
     Process(ProcessorArguments),
-    Tick,
 }
 
 /// Render thread to Worker processor arguments
@@ -68,14 +66,6 @@ impl ProcessCallChannel {
         self.cond_var.notify_one();
     }
 
-    fn pop(&self) -> WorkletCommand {
-        let mut buffer = self.command_buffer.lock().unwrap();
-        while buffer.is_empty() {
-            buffer = self.cond_var.wait(buffer).unwrap();
-        }
-        buffer.remove(0)
-    }
-
     fn try_pop(&self) -> Option<WorkletCommand> {
         let mut buffer = self.command_buffer.lock().unwrap();
 
@@ -95,7 +85,7 @@ impl ProcessCallChannel {
 static GLOBAL_PROCESS_CALL_CHANNEL_MAP: RwLock<Vec<Arc<ProcessCallChannel>>> = RwLock::new(vec![]);
 
 /// Request a new channel + ID for a newly created (Offline)AudioContext
-pub(crate) fn allocate_process_call_channel(ctx: &ConcreteBaseAudioContext) -> usize {
+pub(crate) fn allocate_process_call_channel() -> usize {
     // Only one process message can be sent at same time from a given context,
     // but Drop messages could be send too, so let's take some room
     let command_buffer = Mutex::new(Vec::with_capacity(32));
@@ -106,17 +96,6 @@ pub(crate) fn allocate_process_call_channel(ctx: &ConcreteBaseAudioContext) -> u
         exited: AtomicBool::new(false),
     };
     let channel = Arc::new(channel);
-
-    let options = AudioWorkletNodeOptions {
-        number_of_inputs: 1,
-        number_of_outputs: 1, // should be zero, but bug in base lib
-        output_channel_count: Default::default(),
-        parameter_data: Default::default(),
-        audio_node_options: AudioNodeOptions::default(),
-        processor_options: channel.clone(),
-    };
-    let node = AudioWorkletNode::new::<RenderTickProcessor>(ctx, options);
-    ctx.destination().connect(&node);
 
     // We need a write-lock to initialize the channel
     let mut write_lock = GLOBAL_PROCESS_CALL_CHANNEL_MAP.write().unwrap();
@@ -438,8 +417,7 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
     // recv_timeout is not an option due to realtime safety, see discussion of
     // https://github.com/ircam-ismm/node-web-audio-api/pull/124#pullrequestreview-2053515583
     let mut prev = Instant::now();
-    loop {
-        let cmd = process_call_channel(worklet_id).pop();
+    while let Some(cmd) = process_call_channel(worklet_id).try_pop() {
         let now = Instant::now();
         let micros = now.duration_since(prev).as_micros();
         if micros > 3000 {
@@ -453,9 +431,6 @@ pub(crate) fn run_audio_worklet_global_scope(ctx: CallContext) -> Result<JsUndef
             }
             WorkletCommand::Process(args) => {
                 process_audio_worklet(ctx.env, &processors, args)?;
-            }
-            WorkletCommand::Tick => {
-                break;
             }
         }
 
@@ -846,28 +821,5 @@ impl Drop for NapiAudioWorkletProcessor {
         if !self.command_channel.exited.load(Ordering::SeqCst) {
             self.command_channel.push(WorkletCommand::Drop(self.id));
         }
-    }
-}
-
-struct RenderTickProcessor {
-    channel: Arc<ProcessCallChannel>,
-}
-
-impl AudioWorkletProcessor for RenderTickProcessor {
-    type ProcessorOptions = Arc<ProcessCallChannel>;
-
-    fn constructor(channel: Self::ProcessorOptions) -> Self {
-        Self { channel }
-    }
-
-    fn process<'a, 'b>(
-        &mut self,
-        _inputs: &'b [&'a [&'a [f32]]],
-        _outputs: &'b mut [&'a mut [&'a mut [f32]]],
-        _params: AudioParamValues<'b>,
-        _scope: &'b AudioWorkletGlobalScope,
-    ) -> bool {
-        self.channel.push(WorkletCommand::Tick);
-        true
     }
 }
