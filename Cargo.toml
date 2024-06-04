@@ -14,7 +14,8 @@ audio_thread_priority = "0.32.0"
 crossbeam-channel = "0.5.12"
 napi = { version="2.15", features=["napi9", "tokio_rt"] }
 napi-derive = { version="2.15" }
-web-audio-api = "=0.45.0"
+thread-priority = "1.1.0"
+web-audio-api = "=0.45"
 # web-audio-api = { path = "../web-audio-api-rs" }
 
 [target.'cfg(all(any(windows, unix), target_arch = "x86_64", not(target_env = "musl")))'.dependencies]

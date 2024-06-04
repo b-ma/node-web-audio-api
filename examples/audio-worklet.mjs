@@ -60,4 +60,7 @@ if (TEST_ONLINE) {
   src.buffer = buffer;
   src.connect(online.destination);
   src.start();
+
+  await sleep(8);
+  await online.close();
 }
