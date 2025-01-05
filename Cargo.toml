@@ -10,6 +10,7 @@ version = "0.21.5"
 crate-type = ["cdylib"]
 
 [dependencies]
+audio_thread_priority = "0.32.0"
 crossbeam-channel = "0.5.12"
 napi = { version="2.16", features=["napi9", "tokio_rt"] }
 napi-derive = { version="2.16" }

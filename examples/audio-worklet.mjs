@@ -42,13 +42,16 @@ const whiteNoise = new AudioWorkletNode(audioContext, 'white-noise');
 whiteNoise.connect(audioContext.destination);
 
 if (TEST_ONLINE) {
+  var maxPeakLoad = 0.;
   audioContext.renderCapacity.addEventListener('update', e => {
     const { timestamp, averageLoad, peakLoad, underrunRatio } = e;
     console.log('AudioRenderCapacityEvent:', { timestamp, averageLoad, peakLoad, underrunRatio });
+    maxPeakLoad = Math.max(maxPeakLoad, peakLoad);
   });
   audioContext.renderCapacity.start({ updateInterval: 1. });
 
   await sleep(8);
+  console.log('maxPeakLoad', maxPeakLoad);
   await audioContext.close();
 } else {
   const buffer = await audioContext.startRendering();
